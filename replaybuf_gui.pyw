@@ -472,9 +472,11 @@ class Recorder:
         return cmd
 
     def playlist(self):
-        """[(duracion_s, Path)] de los segmentos COMPLETOS, del mas antiguo al mas reciente."""
+        """[(duracion_s, Path)] de los segmentos COMPLETOS, del mas antiguo al mas reciente.
+        Si la playlist HLS no está lista todavía, usa los .m4s reales del directorio como fallback."""
         if not self.seg_dir:
             return []
+
         txt = ""
         for _ in range(20):
             try:
@@ -498,7 +500,6 @@ class Recorder:
                         dur = None
                 continue
 
-            # Solo acepta segmentos .m4s finales (sin .tmp)
             if not line.lower().endswith(".m4s"):
                 continue
 
@@ -506,15 +507,23 @@ class Recorder:
             if not p.exists():
                 continue
 
-            # Evita duplicados
             if p.name in seen:
                 continue
             seen.add(p.name)
 
-            # Usa la duracion del playlist si esta disponible
             if dur is not None:
                 out.append((dur, p))
             dur = None
+
+        if out:
+            return out
+
+        # Fallback: si la playlist aún no está lista, usa los segmentos reales del directorio
+        files = sorted(self.seg_dir.glob("seg_*.m4s"), key=lambda f: f.name)
+        for f in files:
+            if f.name in seen:
+                continue
+            out.append((HLS_TIME, f))
 
         return out
 
@@ -591,7 +600,6 @@ class Recorder:
                 if not entries or not init or not init.exists():
                     return False, "El buffer está vacío. Espera a que se llene y vuelve a intentarlo."
 
-                # Si hay muy poco material, el clip no es usable
                 total = sum(d for d, _ in entries)
                 if total < 1.0:
                     return False, "Todavía no hay suficiente video en el buffer."
@@ -687,7 +695,6 @@ class App:
         main = ttk.Frame(self.root, padding=12)
         main.grid(sticky="nsew")
 
-        # --- fila superior: toggle + estado
         top = ttk.Frame(main)
         top.grid(row=0, column=0, sticky="ew", pady=(0, 12))
         self.btn_toggle = ttk.Button(top, text="▶ Activar replay buffer", width=24,
@@ -697,18 +704,15 @@ class App:
                                    font=("Segoe UI", 10, "bold"), bg="#1a1a1a")
         self.lbl_status.grid(row=0, column=1, padx=12)
 
-        # --- duracion
         f = ttk.LabelFrame(main, text="⏱ Duración", padding=10)
         f.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         self.v_buffer = tk.StringVar(value=str(c["buffer_s"]))
         self.v_clip = tk.StringVar(value=str(c["clip_s"]))
         self.v_hotkey = tk.StringVar(value=c["hotkey"])
         ttk.Label(f, text="Buffer (s):").grid(row=0, column=0, sticky="w")
-        ttk.Spinbox(f, from_=5, to=600, width=6, textvariable=self.v_buffer).grid(
-            row=0, column=1, padx=8)
+        ttk.Spinbox(f, from_=5, to=600, width=6, textvariable=self.v_buffer).grid(row=0, column=1, padx=8)
         ttk.Label(f, text="Clip a guardar (s):").grid(row=0, column=2, sticky="w", padx=(12, 0))
-        ttk.Spinbox(f, from_=5, to=600, width=6, textvariable=self.v_clip).grid(
-            row=0, column=3, padx=8)
+        ttk.Spinbox(f, from_=5, to=600, width=6, textvariable=self.v_clip).grid(row=0, column=3, padx=8)
         ttk.Label(f, text="Hotkey:").grid(row=1, column=0, sticky="w", pady=(8, 0))
         e = ttk.Entry(f, width=14, textvariable=self.v_hotkey)
         e.grid(row=1, column=1, columnspan=2, sticky="w", padx=8, pady=(8, 0))
@@ -716,7 +720,6 @@ class App:
         self.v_buffer.trace_add("write", self._sync_limits)
         self.v_clip.trace_add("write", self._sync_limits)
 
-        # --- fuente
         f = ttk.LabelFrame(main, text="📹 Qué clipear", padding=10)
         f.grid(row=2, column=0, sticky="ew", pady=(0, 8))
         self.cb_source = ttk.Combobox(f, state="readonly", width=48)
@@ -744,7 +747,6 @@ class App:
         self.cb_capture.grid(row=3, column=1, columnspan=2, sticky="w", pady=(8, 0))
         self.locked += [cm, self.cb_capture]
 
-        # --- calidad
         f = ttk.LabelFrame(main, text="⚙ Calidad de grabación", padding=10)
         f.grid(row=3, column=0, sticky="ew", pady=(0, 8))
         self.v_codec = tk.StringVar(value=c["codec"])
@@ -801,7 +803,6 @@ class App:
         self._normal_states = {w: ("readonly" if isinstance(w, ttk.Combobox)
                                    else "normal") for w in self.locked}
 
-        # --- carpeta + acciones
         f = ttk.Frame(main)
         f.grid(row=4, column=0, sticky="ew", pady=(8, 0))
         self.lbl_dir = ttk.Label(f, text="", width=44, anchor="w")
@@ -864,7 +865,6 @@ class App:
         if not locked:
             self._on_source_change()
 
-    # ----------------------------------------------------------- ajustes
     @staticmethod
     def _int(var, lo, hi, default):
         try:
@@ -877,7 +877,7 @@ class App:
         b = self._int(self.v_buffer, 5, 600, 30)
         c = self._int(self.v_clip, 5, 600, 30)
         self.limits["buffer"] = b
-        self.limits["clip"] = min(c, b)  # el clip no puede ser mayor que el buffer
+        self.limits["clip"] = min(c, b)
 
     def _read_cfg(self):
         cfg = dict(self.cfg)
@@ -921,7 +921,6 @@ class App:
                        sw=region[3], sh=region[4])
         return src, None
 
-    # ------------------------------------------------------ start / stop
     def toggle(self):
         if self.running:
             self.stop()
@@ -973,9 +972,7 @@ class App:
         self._set_locked(False)
         self.lbl_status.config(text="● Desactivado", fg="#666666")
 
-    # ------------------------------------------------------ guardar clip
     def request_save(self):
-        """Se llama desde el boton o desde el hilo del hotkey (no toca Tk)."""
         if not self.running:
             self.events.put(("fail", "Activa el buffer primero."))
             return
@@ -985,12 +982,10 @@ class App:
         ok, info = self.rec.save_clip(self.ffmpeg, self.out_dir)
         self.events.put(("ok" if ok else "fail", info))
 
-    # -------------------------------------------------------------- tick
     def _set_status(self):
         n = self.rec.buffered_seconds()
-        self.lbl_status.config(
-            text=f"● Grabando · {n}s en buffer · clip de {self.limits['clip']}s ({self.cfg['hotkey'].upper()})",
-            fg="#4a9d6f")
+        self.lbl_status.config(text=f"● Grabando · {n}s en buffer · clip de {self.limits['clip']}s ({self.cfg['hotkey'].upper()})",
+                               fg="#4a9d6f")
 
     def tick(self):
         while True:
@@ -1007,8 +1002,7 @@ class App:
             if not self.rec.alive():
                 log = tail(self.rec.log_path)
                 self.stop()
-                messagebox.showerror(
-                    APP_TITLE,
+                messagebox.showerror(APP_TITLE,
                     "ffmpeg se cerró inesperadamente. Últimas líneas del log:\n\n" + log +
                     "\n\nPrueba la captura 'GDI' o revisa que tu ffmpeg sea una build 'full'.")
             else:
@@ -1031,7 +1025,7 @@ def main():
         sys.exit(1)
     try:
         App().run()
-    except Exception as e:  # el .pyw no tiene consola: mostrar el error
+    except Exception as e:
         try:
             messagebox.showerror(APP_TITLE, f"Error inesperado:\n{e}")
         except Exception:
